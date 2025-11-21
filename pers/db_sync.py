@@ -1,6 +1,6 @@
 """
-Простая синхронизация баз данных с Yandex Object Storage.
-Загружает БД из облака при старте, если локальной нет.
+Принудительная синхронизация баз данных с Yandex Object Storage.
+Всегда загружает БД из облака при старте и всегда сохраняет в облако при остановке.
 """
 
 import os
@@ -54,6 +54,7 @@ def get_s3_client():
 def download_database(db_path: Path, cloud_key: str) -> bool:
     """
     Загружает базу данных из облака.
+    Удаляет старые WAL файлы перед загрузкой.
     
     Args:
         db_path: Локальный путь к БД
@@ -67,6 +68,39 @@ def download_database(db_path: Path, cloud_key: str) -> bool:
         return False
     
     try:
+        # Закрываем все соединения перед загрузкой
+        db_name = db_path.name
+        if db_name == "users.db":
+            try:
+                from SMS.database import close_all_connections
+                close_all_connections()
+            except Exception:
+                pass
+        elif db_name == "personas.db":
+            try:
+                from pers.database import close_all_connections
+                close_all_connections()
+            except Exception:
+                pass
+        
+        # Удаляем старые WAL файлы если есть
+        wal_file = db_path.with_suffix('.db-wal')
+        shm_file = db_path.with_suffix('.db-shm')
+        
+        if wal_file.exists():
+            try:
+                wal_file.unlink()
+                logger.debug(f"Удален старый WAL файл: {wal_file}")
+            except Exception as e:
+                logger.warning(f"Не удалось удалить WAL файл: {e}")
+        
+        if shm_file.exists():
+            try:
+                shm_file.unlink()
+                logger.debug(f"Удален старый SHM файл: {shm_file}")
+            except Exception as e:
+                logger.warning(f"Не удалось удалить SHM файл: {e}")
+        
         # Создаем директорию если нужно
         db_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -101,9 +135,17 @@ def upload_database(db_path: Path, cloud_key: str) -> bool:
     if not s3_client or not bucket_name:
         return False
     
+    # Если БД не существует, создаем пустую
     if not db_path.exists():
-        logger.warning(f"Локальная БД не найдена: {db_path}, пропускаю загрузку")
-        return False
+        logger.warning(f"Локальная БД не найдена: {db_path}, создаю пустую")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(db_path))
+            conn.close()
+        except Exception as e:
+            logger.error(f"Не удалось создать пустую БД: {e}")
+            return False
     
     try:
         # Закрываем все соединения из пула перед загрузкой
@@ -180,50 +222,44 @@ def upload_database(db_path: Path, cloud_key: str) -> bool:
 
 def sync_databases_from_cloud() -> bool:
     """
-    Загружает все БД из облака при старте бота, если локальных нет.
+    Принудительно загружает все БД из облака при старте бота.
     
     Returns:
         True если хотя бы одна БД загружена, False если все пропущены
     """
-    logger.info("Проверка БД в облаке...")
+    logger.info("Загрузка БД из облака...")
     
     results = []
     
-    # Загружаем users.db если локальной нет
-    if not USERS_DB.exists():
-        logger.info("users.db не найдена локально, загружаю из облака...")
-        results.append(download_database(USERS_DB, f"{CLOUD_DB_PREFIX}users.db"))
-    else:
-        logger.info("users.db уже существует локально")
+    # Всегда загружаем users.db из облака
+    logger.info("Загружаю users.db из облака...")
+    results.append(download_database(USERS_DB, f"{CLOUD_DB_PREFIX}users.db"))
     
-    # Загружаем personas.db если локальной нет
-    if not PERSONAS_DB.exists():
-        logger.info("personas.db не найдена локально, загружаю из облака...")
-        results.append(download_database(PERSONAS_DB, f"{CLOUD_DB_PREFIX}personas.db"))
-    else:
-        logger.info("personas.db уже существует локально")
+    # Всегда загружаем personas.db из облака
+    logger.info("Загружаю personas.db из облака...")
+    results.append(download_database(PERSONAS_DB, f"{CLOUD_DB_PREFIX}personas.db"))
     
     return any(results)
 
 
 def sync_databases_to_cloud() -> bool:
     """
-    Загружает все БД в облако при остановке бота.
+    Принудительно загружает все БД в облако при остановке бота.
     
     Returns:
         True если успешно загружено, False при ошибке
     """
-    logger.info("Синхронизация БД в облако...")
+    logger.info("Сохранение БД в облако...")
     
     results = []
     
-    # Загружаем users.db
-    if USERS_DB.exists():
-        results.append(upload_database(USERS_DB, f"{CLOUD_DB_PREFIX}users.db"))
+    # Всегда загружаем users.db в облако
+    logger.info("Сохраняю users.db в облако...")
+    results.append(upload_database(USERS_DB, f"{CLOUD_DB_PREFIX}users.db"))
     
-    # Загружаем personas.db
-    if PERSONAS_DB.exists():
-        results.append(upload_database(PERSONAS_DB, f"{CLOUD_DB_PREFIX}personas.db"))
+    # Всегда загружаем personas.db в облако
+    logger.info("Сохраняю personas.db в облако...")
+    results.append(upload_database(PERSONAS_DB, f"{CLOUD_DB_PREFIX}personas.db"))
     
     return all(results)
 
