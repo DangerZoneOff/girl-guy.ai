@@ -25,6 +25,14 @@ async def _start_bot() -> None:
     load_dotenv()
     set_bot_username(os.getenv("TELEGRAM_BOT_USERNAME"))
     logging.basicConfig(level=logging.INFO)
+    
+    # Синхронизация БД из облака при старте
+    try:
+        from pers.db_sync import sync_databases_from_cloud
+        sync_databases_from_cloud()
+    except Exception as e:
+        logging.warning(f"Не удалось синхронизировать БД из облака: {e}")
+    
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not bot_token:
         raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env")
@@ -55,15 +63,41 @@ async def _start_bot() -> None:
             logging.debug(f"Не удалось очистить временные файлы при старте: {e}")
     
     asyncio.create_task(cleanup_on_start())
+    
+    # Периодическая синхронизация БД в облако (каждые 30 минут)
+    async def periodic_db_sync():
+        try:
+            from pers.db_sync import sync_databases_to_cloud_async
+            while True:
+                await asyncio.sleep(1800)  # 30 минут
+                await sync_databases_to_cloud_async()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logging.error(f"Ошибка периодической синхронизации БД: {e}")
+    
+    sync_task = asyncio.create_task(periodic_db_sync())
 
     logging.info("Бот запущен")
     try:
         await dp.start_polling(bot)
     finally:
+        # Синхронизация БД в облако при остановке
+        try:
+            from pers.db_sync import sync_databases_to_cloud_async
+            await sync_databases_to_cloud_async()
+        except Exception as e:
+            logging.error(f"Не удалось синхронизировать БД в облако: {e}")
+        
         if stars_task:
             stars_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await stars_task
+        
+        if sync_task:
+            sync_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sync_task
 
 
 def main():
