@@ -46,8 +46,14 @@ async def _start_bot() -> None:
         init_database()
         personas = get_public_personas()
         logging.info(f"Загружено {len(personas)} публичных персонажей из БД")
+        if len(personas) == 0:
+            logging.warning("⚠️  В БД нет публичных персонажей! Проверьте personas.db")
+        else:
+            logging.info(f"Примеры персонажей: {[p.get('name', '?') for p in personas[:3]]}")
     except Exception as e:
         logging.warning(f"Не удалось проверить количество персонажей: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
 
     await init_referrals(bot)
 

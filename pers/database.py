@@ -327,12 +327,29 @@ def get_public_personas() -> List[Dict[str, Any]]:
     
     with get_db_connection() as conn:
         cursor = conn.cursor()
+        
+        # Сначала проверяем общее количество записей
+        cursor.execute("SELECT COUNT(*) FROM personas")
+        total_count = cursor.fetchone()[0]
+        logger.debug(f"Всего персонажей в БД: {total_count}")
+        
+        # Проверяем публичных
+        cursor.execute("SELECT COUNT(*) FROM personas WHERE public = 1")
+        public_count = cursor.fetchone()[0]
+        logger.debug(f"Публичных персонажей: {public_count}")
+        
+        # Получаем публичных персонажей
         cursor.execute("""
             SELECT * FROM personas 
             WHERE public = 1
             ORDER BY chat_count DESC, name ASC
         """)
-        return [dict(row) for row in cursor.fetchall()]
+        result = [dict(row) for row in cursor.fetchall()]
+        
+        if len(result) == 0 and total_count > 0:
+            logger.warning(f"В БД есть {total_count} персонажей, но ни один не публичный!")
+        
+        return result
 
 
 def update_persona(

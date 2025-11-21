@@ -148,63 +148,112 @@ def upload_database(db_path: Path, cloud_key: str) -> bool:
             return False
     
     try:
-        # Закрываем все соединения из пула перед загрузкой
-        # Это критично для применения WAL изменений
+        import time
+        import sqlite3
+        
+        # Шаг 1: Закрываем все соединения из пула
         db_name = db_path.name
         if db_name == "users.db":
             try:
                 from SMS.database import close_all_connections
                 close_all_connections()
-                logger.debug("Закрыты все соединения с users.db")
+                logger.info("Закрыты все соединения с users.db")
             except Exception as e:
                 logger.warning(f"Не удалось закрыть соединения с users.db: {e}")
         elif db_name == "personas.db":
             try:
                 from pers.database import close_all_connections
                 close_all_connections()
-                logger.debug("Закрыты все соединения с personas.db")
+                logger.info("Закрыты все соединения с personas.db")
             except Exception as e:
                 logger.warning(f"Не удалось закрыть соединения с personas.db: {e}")
         
-        # Небольшая задержка для завершения операций
-        import time
-        time.sleep(0.5)
+        # Шаг 2: Ждем завершения всех операций
+        time.sleep(1.0)
         
-        # Применяем WAL изменения
-        # Используем RESTART для закрытия всех соединений и применения изменений
+        # Шаг 3: Применяем WAL изменения несколько раз для надежности
         wal_file = db_path.with_suffix('.db-wal')
         shm_file = db_path.with_suffix('.db-shm')
         
-        if wal_file.exists() or shm_file.exists():
+        # Делаем checkpoint несколько раз, пока WAL файл не исчезнет
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            if not wal_file.exists() and not shm_file.exists():
+                break
+            
             try:
-                import sqlite3
-                # Открываем новое соединение для checkpoint
-                conn = sqlite3.connect(str(db_path), timeout=5.0)
-                # RESTART закрывает все соединения и применяет WAL
-                conn.execute("PRAGMA wal_checkpoint(RESTART)")
+                # Открываем соединение в режиме EXCLUSIVE для гарантированного checkpoint
+                conn = sqlite3.connect(str(db_path), timeout=10.0)
+                # TRUNCATE более агрессивный - применяет все изменения и удаляет WAL
+                result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                checkpoint_result = result.fetchone()
                 conn.commit()
                 conn.close()
                 
-                # Удаляем WAL файлы после checkpoint
-                if wal_file.exists():
-                    try:
-                        wal_file.unlink()
-                        logger.debug("WAL файл удален после checkpoint")
-                    except Exception as e:
-                        logger.warning(f"Не удалось удалить WAL файл: {e}")
+                # Проверяем результат checkpoint
+                if checkpoint_result:
+                    logger.debug(f"Checkpoint attempt {attempt + 1}: {checkpoint_result}")
                 
-                if shm_file.exists():
-                    try:
-                        shm_file.unlink()
-                        logger.debug("SHM файл удален после checkpoint")
-                    except Exception as e:
-                        logger.warning(f"Не удалось удалить SHM файл: {e}")
+                # Небольшая задержка между попытками
+                time.sleep(0.3)
                 
-                logger.info("WAL изменения применены к основной БД")
             except Exception as e:
-                logger.warning(f"Не удалось применить WAL изменения: {e}")
+                logger.warning(f"Ошибка при checkpoint (попытка {attempt + 1}): {e}")
+                time.sleep(0.5)
         
-        # Загружаем файл
+        # Шаг 4: Принудительно удаляем WAL файлы если они остались
+        if wal_file.exists():
+            try:
+                wal_file.unlink()
+                logger.info("WAL файл принудительно удален")
+            except Exception as e:
+                logger.warning(f"Не удалось удалить WAL файл: {e}")
+        
+        if shm_file.exists():
+            try:
+                shm_file.unlink()
+                logger.info("SHM файл принудительно удален")
+            except Exception as e:
+                logger.warning(f"Не удалось удалить SHM файл: {e}")
+        
+        # Шаг 5: Проверяем размер и содержимое БД перед загрузкой
+        file_size_before = db_path.stat().st_size
+        logger.info(f"Размер БД перед загрузкой: {file_size_before} байт")
+        
+        # Проверяем содержимое БД
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=5.0)
+            cursor = conn.cursor()
+            
+            # Проверяем таблицы
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = cursor.fetchall()
+            logger.info(f"Таблицы в БД: {[t[0] for t in tables]}")
+            
+            # Проверяем количество записей в основных таблицах
+            if db_name == "users.db":
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM token_balances")
+                    count = cursor.fetchone()[0]
+                    logger.info(f"Записей в token_balances: {count}")
+                except:
+                    pass
+            elif db_name == "personas.db":
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM personas")
+                    count = cursor.fetchone()[0]
+                    logger.info(f"Записей в personas: {count}")
+                except:
+                    pass
+            
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Не удалось проверить содержимое БД: {e}")
+        
+        if file_size_before < 3000:
+            logger.warning(f"ВНИМАНИЕ: БД очень маленькая ({file_size_before} байт), возможно пустая!")
+        
+        # Шаг 6: Загружаем файл в облако
         s3_client.upload_file(
             str(db_path),
             bucket_name,
@@ -212,8 +261,8 @@ def upload_database(db_path: Path, cloud_key: str) -> bool:
             ExtraArgs={'ContentType': 'application/x-sqlite3'}
         )
         
-        file_size = db_path.stat().st_size
-        logger.info(f"БД загружена в облако: {db_path} -> {cloud_key} (размер: {file_size} байт)")
+        file_size_after = db_path.stat().st_size
+        logger.info(f"БД загружена в облако: {db_path} -> {cloud_key} (размер: {file_size_after} байт)")
         return True
     except Exception as e:
         logger.error(f"Ошибка загрузки БД в облако: {e}")
