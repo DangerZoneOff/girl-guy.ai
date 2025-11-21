@@ -451,6 +451,11 @@ def get_public_personas() -> List[Dict[str, Any]]:
         return [dict(row) for row in cursor.fetchall()]
 
 
+def set_persona_public(persona_id: int, public: bool) -> bool:
+    """Устанавливает публичность персонажа."""
+    return update_persona(persona_id, public=public)
+
+
 def persona_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     Helper для преобразования строки БД в формат, ожидаемый старыми частями кода.
@@ -479,6 +484,7 @@ __all__ = [
     "delete_persona",
     "increment_persona_chat_count",
     "get_public_personas",
+    "set_persona_public",
     "persona_to_dict",
     "DB_PATH"
 ]

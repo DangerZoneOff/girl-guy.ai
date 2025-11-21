@@ -55,7 +55,12 @@ async def _start_bot() -> None:
         import traceback
         logging.error(traceback.format_exc())
 
-    await init_referrals(bot)
+    # Инициализация реферальной системы (может не работать без интернета)
+    try:
+        await init_referrals(bot)
+    except Exception as e:
+        logging.warning(f"Не удалось инициализировать реферальную систему: {e}")
+        # Продолжаем работу даже если не удалось получить username бота
 
     register_gender_handlers(dp)
     register_menu_handlers(dp)
@@ -83,6 +88,10 @@ async def _start_bot() -> None:
     logging.info("Бот запущен")
     try:
         await dp.start_polling(bot)
+    except KeyboardInterrupt:
+        logging.info("Получен сигнал прерывания, останавливаем бота...")
+    except Exception as e:
+        logging.error(f"Ошибка при работе бота: {e}", exc_info=True)
     finally:
         # Сохранение БД в облако при остановке
         try:
@@ -95,6 +104,13 @@ async def _start_bot() -> None:
             stars_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await stars_task
+        
+        # Закрываем сессию бота
+        try:
+            await bot.session.close()
+            logging.info("Сессия бота закрыта")
+        except Exception as e:
+            logging.warning(f"Ошибка при закрытии сессии бота: {e}")
 
 
 def main():
