@@ -144,11 +144,62 @@ def get_db_connection(timeout: float = 10.0):
                     pass
 
 
+def _load_database_from_cloud() -> None:
+    """
+    Загружает users.db из Yandex Object Storage, если локальной нет.
+    """
+    if DB_PATH.exists():
+        logger.debug("users.db уже существует локально, пропускаю загрузку из облака")
+        return
+    
+    try:
+        import boto3
+        import os
+        
+        bucket_name = os.getenv("YANDEX_BUCKET")
+        access_key_id = os.getenv("YANDEX_ACCESS_KEY_ID")
+        secret_access_key = os.getenv("YANDEX_SECRET_ACCESS_KEY")
+        
+        if not bucket_name or not access_key_id or not secret_access_key:
+            logger.debug("Yandex ключи не настроены, пропускаю загрузку users.db из облака")
+            return
+        
+        endpoint_url = os.getenv("YANDEX_ENDPOINT", "https://storage.yandexcloud.net")
+        cloud_key = "databases/users.db"
+        
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
+            region_name=os.getenv("YANDEX_REGION", "ru-central1"),
+        )
+        
+        # Создаем директорию если нужно
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Загружаем файл
+        s3_client.download_file(bucket_name, cloud_key, str(DB_PATH))
+        
+        file_size = DB_PATH.stat().st_size
+        logger.info(f"users.db загружена из облака (размер: {file_size} байт)")
+    except Exception as e:
+        error_code = getattr(e, 'response', {}).get('Error', {}).get('Code', '')
+        if error_code == 'NoSuchKey':
+            logger.info("users.db не найдена в облаке, будет создана новая")
+        else:
+            logger.warning(f"Не удалось загрузить users.db из облака: {e}")
+
+
 def init_database() -> None:
     """
     Инициализирует базу данных и создает таблицы.
     Вызывается автоматически при первом использовании.
+    Загружает БД из облака, если локальной нет.
     """
+    # Загружаем из облака перед инициализацией
+    _load_database_from_cloud()
+    
     with get_db_connection() as conn:
         cursor = conn.cursor()
         

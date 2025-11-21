@@ -26,14 +26,13 @@ async def _start_bot() -> None:
     set_bot_username(os.getenv("TELEGRAM_BOT_USERNAME"))
     logging.basicConfig(level=logging.INFO)
     
-    # Синхронизация БД из облака при старте (только если локальной нет или она пустая)
-    # ВАЖНО: Делаем это ДО создания бота и инициализации БД
+    # Загрузка БД из облака при старте (только если локальных нет)
     try:
         from pers.db_sync import sync_databases_from_cloud
-        sync_databases_from_cloud(force=False)  # Не перезаписываем если есть данные
-        logging.info("БД синхронизированы из облака (если нужно)")
+        sync_databases_from_cloud()
+        logging.info("Проверка БД в облаке завершена")
     except Exception as e:
-        logging.warning(f"Не удалось синхронизировать БД из облака: {e}")
+        logging.warning(f"Не удалось проверить БД в облаке: {e}")
     
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not bot_token:
@@ -41,15 +40,12 @@ async def _start_bot() -> None:
     bot = Bot(token=bot_token)
     dp = Dispatcher()
 
-    # Проверяем количество персонажей в БД ПОСЛЕ синхронизации
+    # Инициализируем БД (создаст таблицы если их нет)
     try:
         from pers.database import get_public_personas, init_database
-        # Инициализируем БД (создаст таблицы если их нет, но не перезапишет данные)
         init_database()
         personas = get_public_personas()
         logging.info(f"Загружено {len(personas)} публичных персонажей из БД")
-        if len(personas) == 0:
-            logging.warning("⚠️  В БД нет публичных персонажей! Проверьте, что БД в облаке содержит данные.")
     except Exception as e:
         logging.warning(f"Не удалось проверить количество персонажей: {e}")
 
@@ -78,40 +74,21 @@ async def _start_bot() -> None:
     
     asyncio.create_task(cleanup_on_start())
     
-    # Периодическая синхронизация БД в облако (каждые 30 минут)
-    async def periodic_db_sync():
-        try:
-            from pers.db_sync import sync_databases_to_cloud_async
-            while True:
-                await asyncio.sleep(1800)  # 30 минут
-                await sync_databases_to_cloud_async()
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logging.error(f"Ошибка периодической синхронизации БД: {e}")
-    
-    sync_task = asyncio.create_task(periodic_db_sync())
-
     logging.info("Бот запущен")
     try:
         await dp.start_polling(bot)
     finally:
-        # Синхронизация БД в облако при остановке
+        # Сохранение БД в облако при остановке
         try:
             from pers.db_sync import sync_databases_to_cloud_async
             await sync_databases_to_cloud_async()
         except Exception as e:
-            logging.error(f"Не удалось синхронизировать БД в облако: {e}")
+            logging.error(f"Не удалось сохранить БД в облако: {e}")
         
         if stars_task:
             stars_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await stars_task
-        
-        if sync_task:
-            sync_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await sync_task
 
 
 def main():
