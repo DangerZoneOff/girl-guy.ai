@@ -13,12 +13,13 @@ import threading
 import queue
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # Путь к БД в папке pers
-BASE_DIR = os.path.dirname(__file__)
-DB_PATH = os.path.join(BASE_DIR, "personas.db")
+BASE_DIR = Path(__file__).parent
+DB_PATH = BASE_DIR / "personas.db"
 
 # Настройки connection pool
 POOL_SIZE = 5  # Количество соединений в пуле
@@ -32,7 +33,7 @@ _pool_initialized = False
 
 def _create_connection() -> sqlite3.Connection:
     """Создает новое соединение с БД с оптимальными настройками."""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=10.0)
     conn.row_factory = sqlite3.Row
     
     # Оптимизации для производительности
@@ -138,11 +139,26 @@ def get_db_connection(timeout: float = 10.0):
             conn = _create_connection()
         
         yield conn
-        conn.commit()
+        # Явно делаем commit перед возвратом соединения в пул
+        # Это критично для сохранения изменений в WAL режиме
+        # В WAL режиме commit должен быть явным для гарантии записи
+        try:
+            conn.commit()
+        except Exception as commit_error:
+            logger.error(f"Ошибка при commit: {commit_error}")
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
         
     except Exception as e:
         if conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         logger.error(f"Ошибка БД: {e}")
         raise
     finally:
@@ -166,7 +182,7 @@ def _load_database_from_cloud() -> None:
     """
     Загружает personas.db из Yandex Object Storage, если локальной нет.
     """
-    if os.path.exists(DB_PATH):
+    if DB_PATH.exists():
         logger.debug("personas.db уже существует локально, пропускаю загрузку из облака")
         return
     
@@ -193,12 +209,12 @@ def _load_database_from_cloud() -> None:
         )
         
         # Создаем директорию если нужно
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         
         # Загружаем файл
-        s3_client.download_file(bucket_name, cloud_key, DB_PATH)
+        s3_client.download_file(bucket_name, cloud_key, str(DB_PATH))
         
-        file_size = os.path.getsize(DB_PATH)
+        file_size = DB_PATH.stat().st_size
         logger.info(f"personas.db загружена из облака (размер: {file_size} байт)")
     except Exception as e:
         error_code = getattr(e, 'response', {}).get('Error', {}).get('Code', '')
@@ -212,7 +228,6 @@ def init_database() -> None:
     """
     Инициализирует базу данных и создает таблицы.
     Вызывается автоматически при первом использовании.
-    Загружает БД из облака, если локальной нет.
     """
     # Загружаем из облака перед инициализацией
     _load_database_from_cloud()
@@ -241,7 +256,9 @@ def init_database() -> None:
                 initial_scene TEXT,
                 photo_path TEXT NOT NULL,
                 photo_url TEXT,
+                photo_file_id TEXT,
                 public BOOLEAN DEFAULT 0,
+                chat_count INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(owner_id, name)
@@ -304,7 +321,6 @@ def create_persona(
     
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        # ВСЕГДА используем параметризованные запросы (?) вместо форматирования строк
         cursor.execute("""
             INSERT INTO personas 
             (owner_id, name, age, description, character, scene, initial_scene, photo_path, photo_url, public)
@@ -377,29 +393,12 @@ def get_public_personas() -> List[Dict[str, Any]]:
     
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        
-        # Сначала проверяем общее количество записей
-        cursor.execute("SELECT COUNT(*) FROM personas")
-        total_count = cursor.fetchone()[0]
-        logger.debug(f"Всего персонажей в БД: {total_count}")
-        
-        # Проверяем публичных
-        cursor.execute("SELECT COUNT(*) FROM personas WHERE public = 1")
-        public_count = cursor.fetchone()[0]
-        logger.debug(f"Публичных персонажей: {public_count}")
-        
-        # Получаем публичных персонажей
         cursor.execute("""
             SELECT * FROM personas 
             WHERE public = 1
             ORDER BY chat_count DESC, name ASC
         """)
-        result = [dict(row) for row in cursor.fetchall()]
-        
-        if len(result) == 0 and total_count > 0:
-            logger.warning(f"В БД есть {total_count} персонажей, но ни один не публичный!")
-        
-        return result
+        return [dict(row) for row in cursor.fetchall()]
 
 
 def update_persona(
@@ -423,7 +422,7 @@ def update_persona(
     
     updates = []
     params = []
-    reset_file_id = False  # Флаг для отслеживания необходимости сброса file_id
+    reset_file_id = False
     
     if name is not None:
         updates.append("name = ?")
@@ -446,12 +445,10 @@ def update_persona(
     if photo_path is not None:
         updates.append("photo_path = ?")
         params.append(photo_path)
-        # При обновлении фото сбрасываем старый file_id, так как фото изменилось
         reset_file_id = True
     if photo_url is not None:
         updates.append("photo_url = ?")
         params.append(photo_url)
-        # При обновлении фото сбрасываем старый file_id, так как фото изменилось
         reset_file_id = True
     if reset_file_id:
         updates.append("photo_file_id = NULL")
@@ -470,7 +467,6 @@ def update_persona(
     
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        # Параметризованный запрос с динамическим SET
         query = f"UPDATE personas SET {', '.join(updates)} WHERE id = ?"
         cursor.execute(query, params)
         affected = cursor.rowcount
@@ -537,11 +533,10 @@ def persona_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
         "character": row.get("character"),
         "scene": row.get("scene"),
         "initial_scene": row.get("initial_scene"),
-        "photo": row["photo_url"] or row["photo_path"],  # Приоритет URL над локальным путем
-        "photo_file_id": row.get("photo_file_id"),  # file_id для кэширования в Telegram
+        "photo": row["photo_url"] or row["photo_path"],
+        "photo_file_id": row.get("photo_file_id"),
         "owner_id": row["owner_id"],
         "public": bool(row["public"]),
-        "chat_count": row.get("chat_count", 0) or 0,  # Количество запросов (популярность)
-        "_module_file": None,  # Для совместимости со старым кодом
+        "chat_count": row.get("chat_count", 0) or 0,
+        "_module_file": None,
     }
-
