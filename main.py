@@ -26,12 +26,12 @@ async def _start_bot() -> None:
     set_bot_username(os.getenv("TELEGRAM_BOT_USERNAME"))
     logging.basicConfig(level=logging.INFO)
     
-    # Синхронизация БД из облака при старте (всегда загружаем из облака, если там есть)
+    # Синхронизация БД из облака при старте (только если локальной нет или она пустая)
     # ВАЖНО: Делаем это ДО создания бота и инициализации БД
     try:
         from pers.db_sync import sync_databases_from_cloud
-        sync_databases_from_cloud(force=True)
-        logging.info("БД синхронизированы из облака")
+        sync_databases_from_cloud(force=False)  # Не перезаписываем если есть данные
+        logging.info("БД синхронизированы из облака (если нужно)")
     except Exception as e:
         logging.warning(f"Не удалось синхронизировать БД из облака: {e}")
     

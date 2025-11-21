@@ -177,7 +177,7 @@ def upload_database(db_path: Path, cloud_key: str) -> bool:
         return False
 
 
-def sync_databases_from_cloud(force: bool = True) -> bool:
+def sync_databases_from_cloud(force: bool = False) -> bool:
     """
     Загружает все БД из облака при старте бота.
     
@@ -217,31 +217,51 @@ def sync_databases_from_cloud(force: bool = True) -> bool:
         except Exception as e:
             logger.warning(f"Не удалось проверить версию users.db в облаке: {e}")
     
-    # Загружаем personas.db (всегда из облака, если там есть)
+    # Загружаем personas.db (проверяем, пустая ли локальная БД)
+    should_download_personas = False
+    
     if force or not PERSONAS_DB.exists():
-        results.append(download_database(PERSONAS_DB, f"{CLOUD_DB_PREFIX}personas.db"))
+        should_download_personas = True
+        logger.info("personas.db не существует или force=True, загружаю из облака")
     else:
-        # Проверяем, есть ли в облаке более свежая версия
+        # Проверяем, есть ли данные в локальной БД
         try:
-            s3_client = get_s3_client()
-            if s3_client:
-                bucket_name = os.getenv("YANDEX_BUCKET")
-                cloud_key = f"{CLOUD_DB_PREFIX}personas.db"
+            import sqlite3
+            conn = sqlite3.connect(str(PERSONAS_DB))
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM personas")
+            local_count = cursor.fetchone()[0]
+            conn.close()
+            
+            if local_count == 0:
+                should_download_personas = True
+                logger.info(f"Локальная personas.db пустая ({local_count} записей), загружаю из облака")
+            else:
+                # Проверяем дату модификации
                 try:
-                    # Проверяем дату модификации в облаке
-                    response = s3_client.head_object(Bucket=bucket_name, Key=cloud_key)
-                    cloud_time = response.get('LastModified', 0)
-                    local_time = PERSONAS_DB.stat().st_mtime
-                    if cloud_time and cloud_time.timestamp() > local_time:
-                        logger.info("В облаке более свежая версия personas.db, загружаю...")
-                        results.append(download_database(PERSONAS_DB, cloud_key))
-                    else:
-                        logger.info("Локальная personas.db актуальна")
-                except Exception:
-                    # Если не удалось проверить, просто загружаем
-                    results.append(download_database(PERSONAS_DB, cloud_key))
+                    s3_client = get_s3_client()
+                    if s3_client:
+                        bucket_name = os.getenv("YANDEX_BUCKET")
+                        cloud_key = f"{CLOUD_DB_PREFIX}personas.db"
+                        try:
+                            response = s3_client.head_object(Bucket=bucket_name, Key=cloud_key)
+                            cloud_time = response.get('LastModified', 0)
+                            local_time = PERSONAS_DB.stat().st_mtime
+                            if cloud_time and cloud_time.timestamp() > local_time:
+                                logger.info("В облаке более свежая версия personas.db, загружаю...")
+                                should_download_personas = True
+                            else:
+                                logger.info(f"Локальная personas.db актуальна ({local_count} записей)")
+                        except Exception:
+                            logger.info("Не удалось проверить версию в облаке, оставляю локальную")
+                except Exception as e:
+                    logger.warning(f"Не удалось проверить версию personas.db в облаке: {e}")
         except Exception as e:
-            logger.warning(f"Не удалось проверить версию personas.db в облаке: {e}")
+            logger.warning(f"Не удалось проверить локальную personas.db: {e}, загружаю из облака")
+            should_download_personas = True
+    
+    if should_download_personas:
+        results.append(download_database(PERSONAS_DB, f"{CLOUD_DB_PREFIX}personas.db"))
     
     return any(results)
 
