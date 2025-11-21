@@ -1,7 +1,7 @@
 """
-SQLite база данных для хранения персонажей.
-Использует параметризованные запросы для защиты от SQL инъекций.
-Использует connection pool для оптимизации производительности.
+SQLite база данных для хранения персонажей (Personas).
+Полностью совместима с архитектурой users.db.
+Использует connection pool, WAL-режим и параметризованные запросы.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Путь к БД в папке pers
+# Путь к БД: создается в той же папке, где лежит этот файл
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "personas.db"
 
-# Настройки connection pool
-POOL_SIZE = 5  # Количество соединений в пуле
-POOL_TIMEOUT = 10.0  # Таймаут ожидания соединения из пула
+# Настройки connection pool (как в users.db)
+POOL_SIZE = 5
+POOL_TIMEOUT = 10.0
 
 # Thread-safe пул соединений
 _connection_pool: Optional[queue.Queue] = None
@@ -33,15 +33,18 @@ _pool_initialized = False
 
 def _create_connection() -> sqlite3.Connection:
     """Создает новое соединение с БД с оптимальными настройками."""
+    # Создаем папку, если её нет
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=10.0)
     conn.row_factory = sqlite3.Row
     
-    # Оптимизации для производительности
-    conn.execute("PRAGMA journal_mode=WAL")  # WAL режим для параллельных операций
-    conn.execute("PRAGMA synchronous=NORMAL")  # Баланс между скоростью и надежностью
-    conn.execute("PRAGMA cache_size=-64000")  # 64MB кэш (отрицательное значение в KB)
-    conn.execute("PRAGMA temp_store=MEMORY")  # Временные таблицы в памяти
-    conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
+    # Оптимизации для производительности (WAL режим)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA cache_size=-64000")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA mmap_size=268435456")
     
     return conn
 
@@ -65,17 +68,14 @@ def _init_pool() -> None:
                 conn = _create_connection()
                 _connection_pool.put(conn)
             except Exception as e:
-                logger.error(f"Ошибка при создании соединения для пула: {e}")
+                logger.error(f"Ошибка при создании соединения для пула personas: {e}")
         
         _pool_initialized = True
-        logger.info(f"Инициализирован connection pool размером {POOL_SIZE}")
+        logger.info(f"Инициализирован connection pool для personas.db размером {POOL_SIZE}")
 
 
 def close_all_connections() -> None:
-    """
-    Закрывает все соединения из пула.
-    Используется перед загрузкой БД в облако для применения WAL изменений.
-    """
+    """Закрывает все соединения из пула (для корректного бекапа)."""
     global _connection_pool, _pool_initialized
     
     if not _pool_initialized or not _connection_pool:
@@ -86,7 +86,6 @@ def close_all_connections() -> None:
             return
         
         closed_count = 0
-        # Закрываем все соединения из пула
         while True:
             try:
                 conn = _connection_pool.get_nowait()
@@ -94,7 +93,7 @@ def close_all_connections() -> None:
                     conn.close()
                     closed_count += 1
                 except Exception as e:
-                    logger.warning(f"Ошибка при закрытии соединения: {e}")
+                    logger.warning(f"Ошибка при закрытии соединения personas: {e}")
             except queue.Empty:
                 break
         
@@ -102,36 +101,30 @@ def close_all_connections() -> None:
         _pool_initialized = False
         
         if closed_count > 0:
-            logger.info(f"Закрыто {closed_count} соединений из пула")
+            logger.info(f"Закрыто {closed_count} соединений personas.db")
 
 
 @contextmanager
 def get_db_connection(timeout: float = 10.0):
     """
-    Контекстный менеджер для работы с БД с использованием connection pool.
-    Автоматически возвращает соединение в пул после использования.
-    
-    Args:
-        timeout: Таймаут ожидания разблокировки БД в секундах (по умолчанию 10)
+    Контекстный менеджер для работы с БД.
+    Гарантирует возврат соединения в пул и выполнение commit.
     """
     _init_pool()
     
     conn = None
     try:
-        # Получаем соединение из пула
         try:
             conn = _connection_pool.get(timeout=POOL_TIMEOUT)
         except queue.Empty:
-            # Если пул пуст, создаем временное соединение
-            logger.warning("Пул соединений пуст, создается временное соединение")
+            logger.warning("Пул personas пуст, создается временное соединение")
             conn = _create_connection()
         
-        # Проверяем, что соединение живое
+        # Проверка здоровья соединения
         try:
             conn.execute("SELECT 1").fetchone()
         except sqlite3.Error:
-            # Соединение мертво, создаем новое
-            logger.warning("Соединение из пула мертво, создается новое")
+            logger.warning("Соединение personas мертво, пересоздание")
             try:
                 conn.close()
             except:
@@ -139,13 +132,12 @@ def get_db_connection(timeout: float = 10.0):
             conn = _create_connection()
         
         yield conn
-        # Явно делаем commit перед возвратом соединения в пул
-        # Это критично для сохранения изменений в WAL режиме
-        # В WAL режиме commit должен быть явным для гарантии записи
+        
+        # ВАЖНО: Явный commit для сохранения изменений
         try:
             conn.commit()
         except Exception as commit_error:
-            logger.error(f"Ошибка при commit: {commit_error}")
+            logger.error(f"Ошибка при commit в personas.db: {commit_error}")
             if conn:
                 try:
                     conn.rollback()
@@ -159,19 +151,16 @@ def get_db_connection(timeout: float = 10.0):
                 conn.rollback()
             except Exception:
                 pass
-        logger.error(f"Ошибка БД: {e}")
+        logger.error(f"Ошибка БД personas: {e}")
         raise
     finally:
         if conn:
-            # Возвращаем соединение в пул или закрываем, если пул переполнен
             try:
                 _connection_pool.put_nowait(conn)
             except queue.Full:
-                # Пул переполнен, закрываем соединение
                 conn.close()
             except Exception as e:
-                # Ошибка при возврате в пул, закрываем соединение
-                logger.warning(f"Ошибка при возврате соединения в пул: {e}")
+                logger.warning(f"Ошибка возврата в пул: {e}")
                 try:
                     conn.close()
                 except:
@@ -179,11 +168,8 @@ def get_db_connection(timeout: float = 10.0):
 
 
 def _load_database_from_cloud() -> None:
-    """
-    Загружает personas.db из Yandex Object Storage, если локальной нет.
-    """
+    """Загружает personas.db из облака, если локальной нет."""
     if DB_PATH.exists():
-        logger.debug("personas.db уже существует локально, пропускаю загрузку из облака")
         return
     
     try:
@@ -194,7 +180,6 @@ def _load_database_from_cloud() -> None:
         secret_access_key = os.getenv("YANDEX_SECRET_ACCESS_KEY")
         
         if not bucket_name or not access_key_id or not secret_access_key:
-            logger.debug("Yandex ключи не настроены, пропускаю загрузку personas.db из облака")
             return
         
         endpoint_url = os.getenv("YANDEX_ENDPOINT", "https://storage.yandexcloud.net")
@@ -208,42 +193,21 @@ def _load_database_from_cloud() -> None:
             region_name=os.getenv("YANDEX_REGION", "ru-central1"),
         )
         
-        # Создаем директорию если нужно
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Загружаем файл
         s3_client.download_file(bucket_name, cloud_key, str(DB_PATH))
-        
-        file_size = DB_PATH.stat().st_size
-        logger.info(f"personas.db загружена из облака (размер: {file_size} байт)")
+        logger.info("personas.db загружена из облака")
     except Exception as e:
-        error_code = getattr(e, 'response', {}).get('Error', {}).get('Code', '')
-        if error_code == 'NoSuchKey':
-            logger.info("personas.db не найдена в облаке, будет создана новая")
-        else:
-            logger.warning(f"Не удалось загрузить personas.db из облака: {e}")
+        logger.warning(f"Не удалось загрузить personas.db: {e}")
 
 
 def init_database() -> None:
-    """
-    Инициализирует базу данных и создает таблицы.
-    Вызывается автоматически при первом использовании.
-    """
-    # Загружаем из облака перед инициализацией
+    """Инициализирует структуру таблиц."""
     _load_database_from_cloud()
     
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
-        # Включаем WAL режим для параллельных операций
-        try:
-            cursor.execute("PRAGMA journal_mode=WAL")
-            result = cursor.fetchone()
-            logger.info(f"Режим журнала БД: {result[0] if result else 'unknown'}")
-        except Exception as e:
-            logger.warning(f"Не удалось установить WAL режим: {e}")
-        
-        # Таблица персонажей
+        # Основная таблица
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS personas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,50 +217,39 @@ def init_database() -> None:
                 description TEXT NOT NULL,
                 character TEXT,
                 scene TEXT,
-                initial_scene TEXT,
                 photo_path TEXT NOT NULL,
                 photo_url TEXT,
-                photo_file_id TEXT,
                 public BOOLEAN DEFAULT 0,
-                chat_count INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(owner_id, name)
             )
         """)
         
-        # Добавляем поле initial_scene если его нет (для существующих БД)
-        try:
-            cursor.execute("ALTER TABLE personas ADD COLUMN initial_scene TEXT")
-        except sqlite3.OperationalError:
-            pass  # Колонка уже существует
+        # Безопасное добавление новых колонок (миграции)
+        migrations = [
+            "ALTER TABLE personas ADD COLUMN initial_scene TEXT",
+            "ALTER TABLE personas ADD COLUMN photo_file_id TEXT",
+            "ALTER TABLE personas ADD COLUMN chat_count INTEGER DEFAULT 0"
+        ]
         
-        # Добавляем поле photo_file_id для кэширования file_id от Telegram
-        try:
-            cursor.execute("ALTER TABLE personas ADD COLUMN photo_file_id TEXT")
-        except sqlite3.OperationalError:
-            pass  # Колонка уже существует
+        for migration in migrations:
+            try:
+                cursor.execute(migration)
+            except sqlite3.OperationalError:
+                # Колонка уже существует, игнорируем ошибку
+                pass
         
-        # Добавляем поле chat_count для подсчета популярности (количество запросов)
-        try:
-            cursor.execute("ALTER TABLE personas ADD COLUMN chat_count INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass  # Колонка уже существует
+        # Создание индексов
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_personas_owner_id ON personas(owner_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_personas_public ON personas(public)")
         
-        # Индексы для быстрого поиска
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_owner_id ON personas(owner_id)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_public ON personas(public)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_owner_public ON personas(owner_id, public)
-        """)
-        
-        # commit выполняется автоматически контекстным менеджером
-        logger.info("База данных инициализирована")
+        logger.info("База данных personas.db успешно инициализирована")
 
+
+# ==========================================
+# Функции работы с данными
+# ==========================================
 
 def create_persona(
     owner_id: int,
@@ -310,15 +263,11 @@ def create_persona(
     photo_url: Optional[str] = None,
     public: bool = False,
 ) -> int:
-    """
-    Создает нового персонажа в БД.
-    Использует параметризованные запросы для защиты от SQL инъекций.
-    
-    Returns:
-        ID созданного персонажа
-    """
-    init_database()
-    
+    """Создает нового персонажа."""
+    # Убедимся, что БД инициализирована (быстрая проверка)
+    if not _pool_initialized:
+        init_database()
+
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -338,17 +287,15 @@ def create_persona(
             1 if public else 0,
         ))
         persona_id = cursor.lastrowid
-        logger.info(f"Создан персонаж ID={persona_id}, owner={owner_id}, name={name}")
+        logger.info(f"Создан персонаж ID={persona_id} для пользователя {owner_id}")
         return persona_id
 
 
 def get_persona_by_id(persona_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Получает персонажа по ID.
-    Использует параметризованный запрос.
-    """
-    init_database()
-    
+    """Получает данные персонажа по ID."""
+    if not _pool_initialized:
+        init_database()
+
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM personas WHERE id = ?", (persona_id,))
@@ -360,45 +307,33 @@ def get_persona_by_id(persona_id: int) -> Optional[Dict[str, Any]]:
 
 def get_personas_by_owner(owner_id: int, include_public: bool = True) -> List[Dict[str, Any]]:
     """
-    Получает всех персонажей пользователя.
-    Использует параметризованный запрос.
+    Возвращает список персонажей.
+    Если include_public=True, возвращает своих + публичных.
     """
-    init_database()
-    
+    if not _pool_initialized:
+        init_database()
+
     with get_db_connection() as conn:
         cursor = conn.cursor()
+        
         if include_public:
-            # Получаем персонажей пользователя ИЛИ публичных
-            cursor.execute("""
+            query = """
                 SELECT * FROM personas 
                 WHERE owner_id = ? OR public = 1
-                ORDER BY name
-            """, (owner_id,))
+                ORDER BY public DESC, name ASC
+            """
+            params = (owner_id,)
         else:
-            # Только персонажи пользователя
-            cursor.execute("""
+            query = """
                 SELECT * FROM personas 
                 WHERE owner_id = ?
-                ORDER BY name
-            """, (owner_id,))
-        
-        return [dict(row) for row in cursor.fetchall()]
-
-
-def get_public_personas() -> List[Dict[str, Any]]:
-    """
-    Получает всех публичных персонажей, отсортированных по популярности (количество запросов).
-    """
-    init_database()
-    
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM personas 
-            WHERE public = 1
-            ORDER BY chat_count DESC, name ASC
-        """)
-        return [dict(row) for row in cursor.fetchall()]
+                ORDER BY name ASC
+            """
+            params = (owner_id,)
+            
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 def update_persona(
@@ -414,12 +349,10 @@ def update_persona(
     photo_file_id: Optional[str] = None,
     public: Optional[bool] = None,
 ) -> bool:
-    """
-    Обновляет данные персонажа.
-    Использует параметризованные запросы и динамическое построение SET.
-    """
-    init_database()
-    
+    """Обновляет данные существующего персонажа."""
+    if not _pool_initialized:
+        init_database()
+
     updates = []
     params = []
     reset_file_id = False
@@ -450,11 +383,16 @@ def update_persona(
         updates.append("photo_url = ?")
         params.append(photo_url)
         reset_file_id = True
+    
+    # Если фото изменилось, сбрасываем cached file_id
     if reset_file_id:
         updates.append("photo_file_id = NULL")
+        
+    # Прямое обновление file_id (например, после отправки в Telegram)
     if photo_file_id is not None:
         updates.append("photo_file_id = ?")
         params.append(photo_file_id)
+        
     if public is not None:
         updates.append("public = ?")
         params.append(1 if public else 0)
@@ -469,61 +407,53 @@ def update_persona(
         cursor = conn.cursor()
         query = f"UPDATE personas SET {', '.join(updates)} WHERE id = ?"
         cursor.execute(query, params)
-        affected = cursor.rowcount
-        logger.info(f"Обновлен персонаж ID={persona_id}, изменено строк: {affected}")
-        return affected > 0
+        return cursor.rowcount > 0
 
 
 def delete_persona(persona_id: int) -> bool:
-    """
-    Удаляет персонажа по ID.
-    Использует параметризованный запрос.
-    """
-    init_database()
-    
+    """Удаляет персонажа."""
+    if not _pool_initialized:
+        init_database()
+
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM personas WHERE id = ?", (persona_id,))
-        affected = cursor.rowcount
-        logger.info(f"Удален персонаж ID={persona_id}, удалено строк: {affected}")
-        return affected > 0
-
-
-def set_persona_public(persona_id: int, public: bool) -> bool:
-    """
-    Устанавливает публичность персонажа.
-    Использует параметризованный запрос.
-    """
-    return update_persona(persona_id, public=public)
+        return cursor.rowcount > 0
 
 
 def increment_persona_chat_count(persona_id: int) -> bool:
-    """
-    Увеличивает счетчик запросов (популярность) персонажа на 1.
-    Используется при начале чата с персонажем.
-    
-    Returns:
-        True если успешно обновлено, False если персонаж не найден
-    """
-    init_database()
-    
+    """Увеличивает счетчик использований персонажа (популярность)."""
+    if not _pool_initialized:
+        init_database()
+        
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE personas 
-            SET chat_count = COALESCE(chat_count, 0) + 1,
-                updated_at = CURRENT_TIMESTAMP
+            SET chat_count = COALESCE(chat_count, 0) + 1 
             WHERE id = ?
         """, (persona_id,))
-        affected = cursor.rowcount
-        if affected > 0:
-            logger.debug(f"Увеличен счетчик запросов для persona_id={persona_id}")
-        return affected > 0
+        return cursor.rowcount > 0
+
+
+def get_public_personas() -> List[Dict[str, Any]]:
+    """Возвращает список публичных персонажей, отсортированных по популярности."""
+    if not _pool_initialized:
+        init_database()
+        
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM personas 
+            WHERE public = 1 
+            ORDER BY chat_count DESC, name ASC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
 
 
 def persona_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Преобразует строку БД в формат, совместимый со старым кодом.
+    Helper для преобразования строки БД в формат, ожидаемый старыми частями кода.
     """
     return {
         "id": row["id"],
@@ -537,6 +467,18 @@ def persona_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
         "photo_file_id": row.get("photo_file_id"),
         "owner_id": row["owner_id"],
         "public": bool(row["public"]),
-        "chat_count": row.get("chat_count", 0) or 0,
-        "_module_file": None,
+        "chat_count": row.get("chat_count", 0)
     }
+
+__all__ = [
+    "init_database", 
+    "create_persona", 
+    "get_persona_by_id", 
+    "get_personas_by_owner", 
+    "update_persona", 
+    "delete_persona",
+    "increment_persona_chat_count",
+    "get_public_personas",
+    "persona_to_dict",
+    "DB_PATH"
+]
