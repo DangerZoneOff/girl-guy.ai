@@ -27,18 +27,11 @@ async def _start_bot() -> None:
     logging.basicConfig(level=logging.INFO)
     
     # Синхронизация БД из облака при старте (всегда загружаем из облака, если там есть)
+    # ВАЖНО: Делаем это ДО создания бота и инициализации БД
     try:
         from pers.db_sync import sync_databases_from_cloud
         sync_databases_from_cloud(force=True)
         logging.info("БД синхронизированы из облака")
-        
-        # Проверяем количество персонажей в БД
-        try:
-            from pers.database import get_public_personas
-            personas = get_public_personas()
-            logging.info(f"Загружено {len(personas)} публичных персонажей из БД")
-        except Exception as e:
-            logging.warning(f"Не удалось проверить количество персонажей: {e}")
     except Exception as e:
         logging.warning(f"Не удалось синхронизировать БД из облака: {e}")
     
@@ -47,6 +40,18 @@ async def _start_bot() -> None:
         raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env")
     bot = Bot(token=bot_token)
     dp = Dispatcher()
+
+    # Проверяем количество персонажей в БД ПОСЛЕ синхронизации
+    try:
+        from pers.database import get_public_personas, init_database
+        # Инициализируем БД (создаст таблицы если их нет, но не перезапишет данные)
+        init_database()
+        personas = get_public_personas()
+        logging.info(f"Загружено {len(personas)} публичных персонажей из БД")
+        if len(personas) == 0:
+            logging.warning("⚠️  В БД нет публичных персонажей! Проверьте, что БД в облаке содержит данные.")
+    except Exception as e:
+        logging.warning(f"Не удалось проверить количество персонажей: {e}")
 
     await init_referrals(bot)
 

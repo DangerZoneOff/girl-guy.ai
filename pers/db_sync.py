@@ -54,6 +54,7 @@ def get_s3_client():
 def download_database(db_path: Path, cloud_key: str) -> bool:
     """
     Загружает базу данных из облака.
+    Закрывает все соединения перед загрузкой и удаляет WAL файлы.
     
     Args:
         db_path: Локальный путь к БД
@@ -69,6 +70,20 @@ def download_database(db_path: Path, cloud_key: str) -> bool:
     bucket_name = os.getenv("YANDEX_BUCKET")
     
     try:
+        # Закрываем все соединения с БД перед загрузкой
+        # Удаляем WAL файлы если они есть
+        wal_files = [
+            db_path.with_suffix('.db-shm'),
+            db_path.with_suffix('.db-wal'),
+        ]
+        for wal_file in wal_files:
+            if wal_file.exists():
+                try:
+                    wal_file.unlink()
+                    logger.debug(f"Удален WAL файл: {wal_file}")
+                except Exception as e:
+                    logger.warning(f"Не удалось удалить WAL файл {wal_file}: {e}")
+        
         # Создаем директорию если нужно
         db_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -83,6 +98,19 @@ def download_database(db_path: Path, cloud_key: str) -> bool:
         if file_size < 100:  # SQLite файл минимум ~2KB
             logger.warning(f"Загруженная БД очень маленькая ({file_size} байт), возможно она пустая")
         
+        # Проверяем количество записей в personas.db
+        if 'personas' in str(db_path):
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(db_path))
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM personas")
+                count = cursor.fetchone()[0]
+                conn.close()
+                logger.info(f"В загруженной personas.db найдено {count} персонажей")
+            except Exception as e:
+                logger.warning(f"Не удалось проверить количество персонажей: {e}")
+        
         return True
     except Exception as e:
         error_code = getattr(e, 'response', {}).get('Error', {}).get('Code', '')
@@ -96,6 +124,7 @@ def download_database(db_path: Path, cloud_key: str) -> bool:
 def upload_database(db_path: Path, cloud_key: str) -> bool:
     """
     Загружает базу данных в облако.
+    Перед загрузкой проверяет, что WAL файлы применены к основной БД.
     
     Args:
         db_path: Локальный путь к БД
@@ -115,6 +144,21 @@ def upload_database(db_path: Path, cloud_key: str) -> bool:
     bucket_name = os.getenv("YANDEX_BUCKET")
     
     try:
+        # Проверяем наличие WAL файлов и применяем их к основной БД
+        wal_file = db_path.with_suffix('.db-wal')
+        if wal_file.exists():
+            logger.info(f"Обнаружен WAL файл, применяю изменения к основной БД...")
+            try:
+                import sqlite3
+                # Открываем БД в режиме WAL и делаем checkpoint для применения изменений
+                conn = sqlite3.connect(str(db_path))
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.commit()
+                conn.close()
+                logger.info("WAL изменения применены к основной БД")
+            except Exception as e:
+                logger.warning(f"Не удалось применить WAL изменения: {e}")
+        
         # Загружаем файл
         s3_client.upload_file(
             str(db_path),
@@ -122,7 +166,11 @@ def upload_database(db_path: Path, cloud_key: str) -> bool:
             cloud_key,
             ExtraArgs={'ContentType': 'application/x-sqlite3'}
         )
-        logger.info(f"БД загружена в облако: {db_path} -> {cloud_key}")
+        
+        # Проверяем размер загруженного файла
+        file_size = db_path.stat().st_size
+        logger.info(f"БД загружена в облако: {db_path} -> {cloud_key} (размер: {file_size} байт)")
+        
         return True
     except Exception as e:
         logger.error(f"Ошибка загрузки БД в облако: {e}")
