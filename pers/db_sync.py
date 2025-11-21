@@ -88,6 +88,7 @@ def download_database(db_path: Path, cloud_key: str) -> bool:
 def upload_database(db_path: Path, cloud_key: str) -> bool:
     """
     Загружает базу данных в облако.
+    Закрывает все соединения и применяет WAL изменения перед загрузкой.
     
     Args:
         db_path: Локальный путь к БД
@@ -105,16 +106,59 @@ def upload_database(db_path: Path, cloud_key: str) -> bool:
         return False
     
     try:
-        # Применяем WAL изменения если есть
+        # Закрываем все соединения из пула перед загрузкой
+        # Это критично для применения WAL изменений
+        db_name = db_path.name
+        if db_name == "users.db":
+            try:
+                from SMS.database import close_all_connections
+                close_all_connections()
+                logger.debug("Закрыты все соединения с users.db")
+            except Exception as e:
+                logger.warning(f"Не удалось закрыть соединения с users.db: {e}")
+        elif db_name == "personas.db":
+            try:
+                from pers.database import close_all_connections
+                close_all_connections()
+                logger.debug("Закрыты все соединения с personas.db")
+            except Exception as e:
+                logger.warning(f"Не удалось закрыть соединения с personas.db: {e}")
+        
+        # Небольшая задержка для завершения операций
+        import time
+        time.sleep(0.5)
+        
+        # Применяем WAL изменения
+        # Используем RESTART для закрытия всех соединений и применения изменений
         wal_file = db_path.with_suffix('.db-wal')
-        if wal_file.exists():
+        shm_file = db_path.with_suffix('.db-shm')
+        
+        if wal_file.exists() or shm_file.exists():
             try:
                 import sqlite3
-                conn = sqlite3.connect(str(db_path))
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                # Открываем новое соединение для checkpoint
+                conn = sqlite3.connect(str(db_path), timeout=5.0)
+                # RESTART закрывает все соединения и применяет WAL
+                conn.execute("PRAGMA wal_checkpoint(RESTART)")
                 conn.commit()
                 conn.close()
-                logger.debug("WAL изменения применены к основной БД")
+                
+                # Удаляем WAL файлы после checkpoint
+                if wal_file.exists():
+                    try:
+                        wal_file.unlink()
+                        logger.debug("WAL файл удален после checkpoint")
+                    except Exception as e:
+                        logger.warning(f"Не удалось удалить WAL файл: {e}")
+                
+                if shm_file.exists():
+                    try:
+                        shm_file.unlink()
+                        logger.debug("SHM файл удален после checkpoint")
+                    except Exception as e:
+                        logger.warning(f"Не удалось удалить SHM файл: {e}")
+                
+                logger.info("WAL изменения применены к основной БД")
             except Exception as e:
                 logger.warning(f"Не удалось применить WAL изменения: {e}")
         

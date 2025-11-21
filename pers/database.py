@@ -70,6 +70,40 @@ def _init_pool() -> None:
         logger.info(f"Инициализирован connection pool размером {POOL_SIZE}")
 
 
+def close_all_connections() -> None:
+    """
+    Закрывает все соединения из пула.
+    Используется перед загрузкой БД в облако для применения WAL изменений.
+    """
+    global _connection_pool, _pool_initialized
+    
+    if not _pool_initialized or not _connection_pool:
+        return
+    
+    with _pool_lock:
+        if not _connection_pool:
+            return
+        
+        closed_count = 0
+        # Закрываем все соединения из пула
+        while True:
+            try:
+                conn = _connection_pool.get_nowait()
+                try:
+                    conn.close()
+                    closed_count += 1
+                except Exception as e:
+                    logger.warning(f"Ошибка при закрытии соединения: {e}")
+            except queue.Empty:
+                break
+        
+        _connection_pool = None
+        _pool_initialized = False
+        
+        if closed_count > 0:
+            logger.info(f"Закрыто {closed_count} соединений из пула")
+
+
 @contextmanager
 def get_db_connection(timeout: float = 10.0):
     """
