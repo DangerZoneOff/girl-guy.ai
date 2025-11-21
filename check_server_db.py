@@ -5,6 +5,10 @@
 import os
 import sqlite3
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Загружаем .env
+load_dotenv()
 
 print("=== Проверка БД на сервере ===\n")
 
