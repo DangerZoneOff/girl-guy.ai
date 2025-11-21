@@ -29,7 +29,7 @@ CLOUD_PREFIX = "databases/"
 def upload_db(local_path: Path, cloud_key: str):
     """Загружает БД в облако."""
     if not local_path.exists():
-        print(f"⚠️  Файл не найден: {local_path}")
+        print(f"Файл не найден: {local_path}")
         return False
     
     try:
@@ -48,19 +48,26 @@ def upload_db(local_path: Path, cloud_key: str):
             ExtraArgs={'ContentType': 'application/x-sqlite3'}
         )
         
-        print(f"✅ Загружено: {local_path.name} -> {cloud_key}")
+        print(f"Загружено: {local_path.name} -> {cloud_key}")
         return True
     except Exception as e:
-        print(f"❌ Ошибка загрузки {local_path.name}: {e}")
+        print(f"Ошибка загрузки {local_path.name}: {e}")
         return False
 
 
 def main():
+    import sys
+    import io
+    
+    # Устанавливаем UTF-8 для вывода
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    
     if not all([BUCKET_NAME, ACCESS_KEY_ID, SECRET_ACCESS_KEY]):
-        print("❌ Ошибка: YANDEX_BUCKET, YANDEX_ACCESS_KEY_ID и YANDEX_SECRET_ACCESS_KEY должны быть в .env")
+        print("Ошибка: YANDEX_BUCKET, YANDEX_ACCESS_KEY_ID и YANDEX_SECRET_ACCESS_KEY должны быть в .env")
         return
     
-    print("📤 Загрузка баз данных в Yandex Object Storage...")
+    print("Загрузка баз данных в Yandex Object Storage...")
     print(f"Бакет: {BUCKET_NAME}")
     print()
     
@@ -70,21 +77,21 @@ def main():
     if USERS_DB.exists():
         results.append(upload_db(USERS_DB, f"{CLOUD_PREFIX}users.db"))
     else:
-        print(f"⚠️  Файл не найден: {USERS_DB}")
+        print(f"Файл не найден: {USERS_DB}")
     
     # Загружаем personas.db
     if PERSONAS_DB.exists():
         results.append(upload_db(PERSONAS_DB, f"{CLOUD_PREFIX}personas.db"))
     else:
-        print(f"⚠️  Файл не найден: {PERSONAS_DB}")
+        print(f"Файл не найден: {PERSONAS_DB}")
     
     print()
     if all(results):
-        print("✅ Все базы данных успешно загружены в облако!")
+        print("Все базы данных успешно загружены в облако!")
     elif any(results):
-        print("⚠️  Некоторые базы данных загружены")
+        print("Некоторые базы данных загружены")
     else:
-        print("❌ Не удалось загрузить базы данных")
+        print("Не удалось загрузить базы данных")
 
 
 if __name__ == "__main__":
