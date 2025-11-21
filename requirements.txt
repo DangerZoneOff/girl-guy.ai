@@ -1,0 +1,10 @@
+aiogram>=3.0.0
+python-dotenv>=1.0.0
+mistralai>=1.0.0
+groq>=0.0.0
+openai>=1.0.0
+httpx-socks>=0.7.0
+httpx>=0.27.0
+# Опционально для облачного хранения фото:
+# cloudinary>=1.0.0
+boto3>=1.0.0

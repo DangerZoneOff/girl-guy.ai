@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Базы данных
+*.db
+*.db-shm
+*.db-wal
+users.db
+personas.db
+
+# JSON файлы (старые, после миграции можно удалить)
+SMS/token_balances.json
+payments/stars_orders.json
+knops/user_profiles.json
+*.json.backup
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Логи
+*.log
+
