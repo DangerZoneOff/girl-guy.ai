@@ -74,7 +74,15 @@ def download_database(db_path: Path, cloud_key: str) -> bool:
         
         # Загружаем файл
         s3_client.download_file(bucket_name, cloud_key, str(db_path))
-        logger.info(f"БД загружена из облака: {cloud_key} -> {db_path}")
+        
+        # Проверяем размер файла
+        file_size = db_path.stat().st_size
+        logger.info(f"БД загружена из облака: {cloud_key} -> {db_path} (размер: {file_size} байт)")
+        
+        # Проверяем, что файл не пустой
+        if file_size < 100:  # SQLite файл минимум ~2KB
+            logger.warning(f"Загруженная БД очень маленькая ({file_size} байт), возможно она пустая")
+        
         return True
     except Exception as e:
         error_code = getattr(e, 'response', {}).get('Error', {}).get('Code', '')
@@ -121,9 +129,12 @@ def upload_database(db_path: Path, cloud_key: str) -> bool:
         return False
 
 
-def sync_databases_from_cloud() -> bool:
+def sync_databases_from_cloud(force: bool = True) -> bool:
     """
     Загружает все БД из облака при старте бота.
+    
+    Args:
+        force: Если True, всегда загружает из облака, даже если локальная БД существует
     
     Returns:
         True если хотя бы одна БД загружена, False если все пропущены
@@ -132,17 +143,57 @@ def sync_databases_from_cloud() -> bool:
     
     results = []
     
-    # Загружаем users.db
-    if USERS_DB.exists():
-        logger.info("Локальная users.db существует, пропускаю загрузку из облака")
-    else:
+    # Загружаем users.db (всегда из облака, если там есть)
+    if force or not USERS_DB.exists():
         results.append(download_database(USERS_DB, f"{CLOUD_DB_PREFIX}users.db"))
-    
-    # Загружаем personas.db
-    if PERSONAS_DB.exists():
-        logger.info("Локальная personas.db существует, пропускаю загрузку из облака")
     else:
+        # Проверяем, есть ли в облаке более свежая версия
+        try:
+            s3_client = get_s3_client()
+            if s3_client:
+                bucket_name = os.getenv("YANDEX_BUCKET")
+                cloud_key = f"{CLOUD_DB_PREFIX}users.db"
+                try:
+                    # Проверяем дату модификации в облаке
+                    response = s3_client.head_object(Bucket=bucket_name, Key=cloud_key)
+                    cloud_time = response.get('LastModified', 0)
+                    local_time = USERS_DB.stat().st_mtime
+                    if cloud_time and cloud_time.timestamp() > local_time:
+                        logger.info("В облаке более свежая версия users.db, загружаю...")
+                        results.append(download_database(USERS_DB, cloud_key))
+                    else:
+                        logger.info("Локальная users.db актуальна")
+                except Exception:
+                    # Если не удалось проверить, просто загружаем
+                    results.append(download_database(USERS_DB, cloud_key))
+        except Exception as e:
+            logger.warning(f"Не удалось проверить версию users.db в облаке: {e}")
+    
+    # Загружаем personas.db (всегда из облака, если там есть)
+    if force or not PERSONAS_DB.exists():
         results.append(download_database(PERSONAS_DB, f"{CLOUD_DB_PREFIX}personas.db"))
+    else:
+        # Проверяем, есть ли в облаке более свежая версия
+        try:
+            s3_client = get_s3_client()
+            if s3_client:
+                bucket_name = os.getenv("YANDEX_BUCKET")
+                cloud_key = f"{CLOUD_DB_PREFIX}personas.db"
+                try:
+                    # Проверяем дату модификации в облаке
+                    response = s3_client.head_object(Bucket=bucket_name, Key=cloud_key)
+                    cloud_time = response.get('LastModified', 0)
+                    local_time = PERSONAS_DB.stat().st_mtime
+                    if cloud_time and cloud_time.timestamp() > local_time:
+                        logger.info("В облаке более свежая версия personas.db, загружаю...")
+                        results.append(download_database(PERSONAS_DB, cloud_key))
+                    else:
+                        logger.info("Локальная personas.db актуальна")
+                except Exception:
+                    # Если не удалось проверить, просто загружаем
+                    results.append(download_database(PERSONAS_DB, cloud_key))
+        except Exception as e:
+            logger.warning(f"Не удалось проверить версию personas.db в облаке: {e}")
     
     return any(results)
 

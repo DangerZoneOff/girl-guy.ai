@@ -26,10 +26,19 @@ async def _start_bot() -> None:
     set_bot_username(os.getenv("TELEGRAM_BOT_USERNAME"))
     logging.basicConfig(level=logging.INFO)
     
-    # Синхронизация БД из облака при старте
+    # Синхронизация БД из облака при старте (всегда загружаем из облака, если там есть)
     try:
         from pers.db_sync import sync_databases_from_cloud
-        sync_databases_from_cloud()
+        sync_databases_from_cloud(force=True)
+        logging.info("БД синхронизированы из облака")
+        
+        # Проверяем количество персонажей в БД
+        try:
+            from pers.database import get_public_personas
+            personas = get_public_personas()
+            logging.info(f"Загружено {len(personas)} публичных персонажей из БД")
+        except Exception as e:
+            logging.warning(f"Не удалось проверить количество персонажей: {e}")
     except Exception as e:
         logging.warning(f"Не удалось синхронизировать БД из облака: {e}")
     
