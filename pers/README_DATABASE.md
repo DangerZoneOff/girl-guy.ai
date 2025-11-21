@@ -159,29 +159,6 @@ YANDEX_ENDPOINT=https://storage.yandexcloud.net
 6. Создайте bucket в Object Storage
 7. Настройте публичный доступ (если нужен) через CORS и политики доступа
 
-## Миграция данных
-
-Если у вас уже есть персонажи в старом формате (Python модули), можно создать скрипт миграции:
-
-```python
-# Пример миграции (создать отдельный скрипт)
-from pers.database import create_persona
-from knops.api_persons import list_profiles
-
-profiles = list_profiles()
-for profile in profiles:
-    create_persona(
-        owner_id=profile.get("owner_id", 0),
-        name=profile["name"],
-        age=profile["age"],
-        description=profile["description"],
-        character=profile.get("character"),
-        scene=profile.get("scene"),
-        photo_path=profile["photo"],
-        public=profile.get("public", False),
-    )
-```
-
 ## Использование
 
 ### Создание персонажа
