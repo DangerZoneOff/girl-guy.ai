@@ -60,6 +60,7 @@ def send_chat_completion(
     """
     Отправляет запрос к Moonshot AI Kimi K2 (OpenRouter) и возвращает текст ответа.
     Обрабатывает ошибки rate limit (429) с автоматическими повторными попытками.
+    Теперь используется через роутер моделей с автоматическим fallback.
     """
     client = get_openrouter_client()
     model_name = get_model_name()

@@ -1,5 +1,5 @@
 """
-Интеграция с OpenRouter (Google Gemini 2.0 Flash) через официальный клиент OpenAI.
+Интеграция с ZenMux (Google Gemini 3 Pro) через официальный клиент OpenAI.
 """
 
 from __future__ import annotations
@@ -15,30 +15,30 @@ _client: OpenAI | None = None
 
 
 def _get_api_key() -> str:
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    api_key = os.getenv("ZENMUX_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "Не указан API-ключ OpenRouter (OPENROUTER_API_KEY). Добавьте его в .env."
+            "Не указан API-ключ ZenMux (ZENMUX_API_KEY). Добавьте его в .env."
         )
     return api_key
 
 
 def _get_base_url() -> str:
-    return os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    return os.getenv("ZENMUX_BASE_URL", "https://zenmux.ai/api/v1")
 
 
 def get_model_name() -> str:
-    return os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free")
+    return os.getenv("ZENMUX_MODEL", "google/gemini-3-pro-preview-free")
 
 
-def get_openrouter_client() -> OpenAI:
+def get_zenmux_client() -> OpenAI:
     global _client
     if _client is None:
         _client = OpenAI(
             api_key=_get_api_key(),
             base_url=_get_base_url(),
         )
-        logger.info("OpenRouter клиент (Gemini) инициализирован")
+        logger.info("ZenMux клиент (Gemini 3 Pro) инициализирован")
     return _client
 
 
@@ -51,20 +51,10 @@ def send_chat_completion(
     enable_reasoning: bool = False,  # Gemini не поддерживает reasoning
 ) -> str:
     """
-    Отправляет запрос к Google Gemini 2.0 Flash (OpenRouter) и возвращает текст ответа.
-    Теперь используется через роутер моделей с автоматическим fallback.
+    Отправляет запрос к Google Gemini 3 Pro (ZenMux) и возвращает текст ответа.
     """
-    client = get_openrouter_client()
+    client = get_zenmux_client()
     model_name = get_model_name()
-    
-    # Получаем site URL и title из переменных окружения (опционально)
-    site_url = os.getenv("OPENROUTER_SITE_URL", "https://github.com/your-repo")
-    site_name = os.getenv("OPENROUTER_SITE_NAME", "Girl-Guy.Ai Bot")
-    
-    extra_headers = {
-        "HTTP-Referer": site_url,
-        "X-Title": site_name,
-    }
 
     try:
         response = client.chat.completions.create(
@@ -75,7 +65,6 @@ def send_chat_completion(
             top_p=1,
             stream=False,
             stop=None,
-            extra_headers=extra_headers,
         )
 
         if response.choices:
@@ -85,28 +74,28 @@ def send_chat_completion(
                 content = message.content.strip()
                 if content:
                     logger.debug(
-                        "Gemini ответил: %d символов, finish_reason=%s",
+                        "Gemini 3 Pro ответил: %d символов, finish_reason=%s",
                         len(content),
                         choice.finish_reason,
                     )
                     return content
 
         logger.warning(
-            "Gemini вернул пустой ответ (персонаж=%s, сообщений=%d)",
+            "Gemini 3 Pro вернул пустой ответ (персонаж=%s, сообщений=%d)",
             persona_name or "-",
             len(messages),
         )
-        return "Gemini ничего не ответил."
+        return "Gemini 3 Pro ничего не ответил."
 
     except Exception as exc:
-        logger.error("Ошибка Gemini API: %s", exc, exc_info=True)
+        logger.error("Ошибка Gemini 3 Pro API: %s", exc, exc_info=True)
         
         # Проверяем тип ошибки
         error_msg = str(exc)
         
         # Если ошибка 403 и содержит информацию о регионе
         if "403" in error_msg or "not available in your region" in error_msg.lower():
-            return "❌ Сервис Gemini недоступен в вашем регионе. Пожалуйста, используйте VPN или обратитесь к администратору."
+            return "❌ Сервис Gemini 3 Pro недоступен в вашем регионе. Пожалуйста, используйте VPN или обратитесь к администратору."
         
         # Если ошибка содержит HTML (некорректный ответ от API)
         if "<!doctype" in error_msg.lower() or "<html>" in error_msg.lower():
@@ -116,5 +105,5 @@ def send_chat_completion(
         return "❌ Ошибка при обращении к AI. Попробуйте еще раз."
 
 
-__all__ = ["send_chat_completion", "get_openrouter_client", "get_model_name"]
+__all__ = ["send_chat_completion", "get_zenmux_client", "get_model_name"]
 

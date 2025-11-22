@@ -9,9 +9,12 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Tuple
 
-from ai.gemini_integration import send_chat_completion
-# from ai.kimi_ai import send_chat_completion  # Отключено - используем Gemini
-# from ai.grok41_integration import send_chat_completion  # Заглушка - можно быстро переключиться обратно
+from ai.model_router import send_chat_completion
+# Используем роутер моделей с автоматическим fallback
+# from ai.gemini3pro_integration import send_chat_completion  # Теперь через роутер
+# from ai.gemini_integration import send_chat_completion  # Теперь через роутер
+# from ai.kimi_ai import send_chat_completion  # Теперь через роутер
+# from ai.grok41_integration import send_chat_completion  # Теперь через роутер
 
 logger = logging.getLogger(__name__)
 
