@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 PREMIUM_PLANS = {
     1: {
         "weeks": 1,
-        "price_stars": 1,
+        "price_stars": 150,
         "tokens": 100,  # Токены начисляются на баланс
         "unlimited": False,
     },
