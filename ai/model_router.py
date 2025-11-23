@@ -267,6 +267,13 @@ def _initialize_models(router: ModelRouter) -> None:
     # Регистрируем модели с приоритетами
     # Чем выше приоритет, тем раньше выбирается модель
     
+    # DeepSeek - первая модель (наивысший приоритет)
+    try:
+        from ai.deepseek_integration import send_chat_completion as deepseek_send
+        router.register_model("DeepSeek V3.1 Terminus (NVIDIA)", deepseek_send, priority=150, enabled=True)
+    except Exception as e:
+        logger.warning(f"Не удалось зарегистрировать DeepSeek: {e}")
+    
     try:
         from ai.gemini3pro_integration import send_chat_completion as gemini3pro_send
         router.register_model("Gemini 3 Pro (ZenMux)", gemini3pro_send, priority=100, enabled=True)
