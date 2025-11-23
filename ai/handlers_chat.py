@@ -47,9 +47,19 @@ async def _process_message(
     context = persona_context_from_dict(context_dict)
     user_id = msg.from_user.id
     
-    # Проверяем токены
-    if not consume_tokens(user_id, 1):
-        balance = get_token_balance(user_id)
+    # Проверяем баланс токенов (но не списываем пока)
+    balance = get_token_balance(user_id)
+    
+    # Проверяем безлимитный премиум статус
+    is_unlimited = False
+    try:
+        from premium.subscription import is_premium_unlimited
+        is_unlimited = is_premium_unlimited(user_id)
+    except Exception:
+        pass
+    
+    # Если не безлимит и баланс недостаточен - отказываем
+    if not is_unlimited and balance < 1:
         await msg.answer(
             f"❗️ Недостаточно токенов. Баланс: {balance}. "
             "Нажми «💰 Пополнить баланс» или используй команду /topup.",
@@ -60,11 +70,37 @@ async def _process_message(
     lock = get_request_lock()
     lock.start_request(user_id)
     
+    # Флаг, были ли списаны токены
+    tokens_consumed = False
+    
     try:
         # Отправляем запрос к ИИ в отдельном потоке, чтобы не блокировать event loop
         # Это позволяет обрабатывать запросы от разных пользователей параллельно
         import asyncio
         response, updated_context = await asyncio.to_thread(run_chat_turn, context, msg.text or "")
+        
+        # Проверяем, является ли ответ ошибкой
+        # Ошибки обычно начинаются с ❌ или ⏳, или содержат определенные фразы
+        is_error = (
+            response.startswith("❌") or 
+            response.startswith("⏳") or
+            "ошибка" in response.lower() or
+            "недоступен" in response.lower() or
+            "попробуйте позже" in response.lower() or
+            "попробуйте еще раз" in response.lower() or
+            "временно недоступен" in response.lower() or
+            "не работает" in response.lower()
+        )
+        
+        # Списываем токены ТОЛЬКО если ответ успешный (не ошибка)
+        if not is_unlimited and not is_error:
+            if consume_tokens(user_id, 1):
+                tokens_consumed = True
+                logger.info(f"Токены списаны после успешного ответа для user_id={user_id}")
+            else:
+                logger.warning(f"Не удалось списать токены для user_id={user_id} после успешного ответа")
+        elif is_error:
+            logger.info(f"Токены НЕ списаны для user_id={user_id} - ответ содержит ошибку")
         
         # Обновляем контекст
         updated_context_dict = updated_context.to_dict()
@@ -95,6 +131,13 @@ async def _process_message(
                 await msg.answer(response)
     except Exception as e:
         logger.error(f"Ошибка при обработке сообщения {msg.message_id}: {e}", exc_info=True)
+        
+        # Если токены были списаны, но произошла ошибка - возвращаем их
+        if tokens_consumed:
+            from SMS.tokens import add_tokens
+            add_tokens(user_id, 1)
+            logger.info(f"Токены возвращены user_id={user_id} из-за ошибки обработки")
+        
         await msg.answer("Произошла ошибка при обработке сообщения. Попробуйте еще раз.")
     finally:
         # Всегда снимаем блокировку после обработки
