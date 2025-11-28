@@ -76,6 +76,7 @@ def get_nvidia_client() -> OpenAI:
             api_key=api_key,
             base_url=base_url,
             timeout=60.0,  # Явно указываем timeout
+            max_retries=0,  # Отключаем автоматические повторные попытки библиотеки (retry делается в роутере)
         )
         logger.info("NVIDIA клиент (DeepSeek) инициализирован")
     return _client

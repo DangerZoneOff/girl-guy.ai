@@ -171,40 +171,72 @@ class ModelRouter:
         
         errors = []
         
+        # Настройки для повторных попыток
+        max_retries_per_model = 3  # Количество попыток для каждой модели
+        retry_delay = 10  # Задержка между попытками в секундах
+        
         # Пробуем модели по приоритету
         for model in available_models:
-            try:
-                logger.debug(f"Пробуем модель: {model.name}")
-                
-                # Вызываем функцию модели
-                response = model.send_function(
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    persona_name=persona_name,
-                    enable_reasoning=enable_reasoning,
-                )
-                
-                # Проверяем, что ответ не является сообщением об ошибке
-                if response and not response.startswith("❌") and not response.startswith("⏳"):
-                    # Успех!
-                    self._mark_success(model)
-                    logger.info(f"Успешный запрос к модели {model.name}")
-                    return response
-                else:
-                    # Ответ содержит ошибку
-                    self._mark_failure(model)
-                    errors.append(f"{model.name}: {response}")
-                    logger.warning(f"Модель {model.name} вернула ошибку: {response}")
-                    continue
+            logger.debug(f"Пробуем модель: {model.name}")
+            
+            # Делаем до 3 попыток для каждой модели
+            for attempt in range(max_retries_per_model):
+                try:
+                    if attempt > 0:
+                        logger.info(f"Повторная попытка {attempt + 1}/{max_retries_per_model} для модели {model.name}")
                     
-            except Exception as exc:
-                # Исключение при вызове модели
-                self._mark_failure(model)
-                error_msg = str(exc)
-                errors.append(f"{model.name}: {error_msg}")
-                logger.error(f"Ошибка при запросе к модели {model.name}: {exc}", exc_info=True)
-                continue
+                    # Вызываем функцию модели
+                    response = model.send_function(
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        persona_name=persona_name,
+                        enable_reasoning=enable_reasoning,
+                    )
+                    
+                    # Проверяем, что ответ не является сообщением об ошибке
+                    if response and not response.startswith("❌") and not response.startswith("⏳"):
+                        # Успех!
+                        self._mark_success(model)
+                        if attempt > 0:
+                            logger.info(f"Успешный запрос к модели {model.name} после {attempt + 1} попытки")
+                        else:
+                            logger.info(f"Успешный запрос к модели {model.name}")
+                        return response
+                    else:
+                        # Ответ содержит ошибку
+                        if attempt < max_retries_per_model - 1:
+                            # Есть еще попытки - ждем и повторяем
+                            logger.warning(
+                                f"Модель {model.name} вернула ошибку (попытка {attempt + 1}/{max_retries_per_model}): {response}. "
+                                f"Повторная попытка через {retry_delay} сек..."
+                            )
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            # Все попытки исчерпаны для этой модели
+                            self._mark_failure(model)
+                            errors.append(f"{model.name}: {response}")
+                            logger.warning(f"Модель {model.name} не ответила после {max_retries_per_model} попыток: {response}")
+                            break  # Переходим к следующей модели
+                        
+                except Exception as exc:
+                    # Исключение при вызове модели
+                    if attempt < max_retries_per_model - 1:
+                        # Есть еще попытки - ждем и повторяем
+                        logger.warning(
+                            f"Ошибка при запросе к модели {model.name} (попытка {attempt + 1}/{max_retries_per_model}): {exc}. "
+                            f"Повторная попытка через {retry_delay} сек..."
+                        )
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        # Все попытки исчерпаны для этой модели
+                        self._mark_failure(model)
+                        error_msg = str(exc)
+                        errors.append(f"{model.name}: {error_msg}")
+                        logger.error(f"Модель {model.name} не ответила после {max_retries_per_model} попыток: {exc}", exc_info=True)
+                        break  # Переходим к следующей модели
         
         # Все модели не сработали
         logger.error(f"Все модели не сработали. Ошибки: {errors}")

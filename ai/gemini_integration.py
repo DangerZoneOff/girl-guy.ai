@@ -37,6 +37,7 @@ def get_openrouter_client() -> OpenAI:
         _client = OpenAI(
             api_key=_get_api_key(),
             base_url=_get_base_url(),
+            max_retries=0,  # Отключаем автоматические повторные попытки библиотеки
         )
         logger.info("OpenRouter клиент (Gemini) инициализирован")
     return _client
